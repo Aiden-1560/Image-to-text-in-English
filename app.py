@@ -5,7 +5,7 @@ import os
 from google import genai
 from google.genai import types
 
-# 1. 페이지 기본 설정 및 디자인 (세련된 테마 적용)
+# 1. 페이지 기본 설정 및 디자인
 st.set_page_config(
     page_title="스마트 영어 교재 텍스트 추출기",
     page_icon="📝",
@@ -47,20 +47,16 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# UI 상단 타이틀
+# UI 상단 타이틀 (입력창이 사라져 더욱 깔끔해진 화면)
 st.markdown('<p class="main-title">📝 Smart Text Extractor</p>', unsafe_allow_html=True)
 st.markdown('<p class="sub-title">영어 지문 사진을 업로드하면 깔끔한 Word 파일로 변환해 드립니다.</p>', unsafe_allow_html=True)
 
-# 2. API 키 설정 (Streamlit Secrets 연동 또는 사이드바 입력)
-# GitHub 배포 시에는 Streamlit 전용 Secrets 기능에 입력하는 것이 안전합니다.
-api_key = st.sidebar.text_input("Gemini API Key를 입력하세요", type="password")
-
-if not api_key:
-    st.info("💡 왼쪽 사이드바에 Gemini API Key를 입력하시면 서비스가 활성화됩니다.")
-else:
-    # 클라이언트 초기화
+# 2. Streamlit Secrets에서 API 키를 자동으로 안전하게 로드
+# 사용자가 화면에서 따로 입력할 필요가 없습니다.
+try:
+    api_key = st.secrets["GEMINI_API_KEY"]
     client = genai.Client(api_key=api_key)
-
+    
     # 3. 파일 업로드 UI (여러 장 동시에 드래그 앤 드롭 가능)
     uploaded_files = st.file_uploader(
         "영어 지문 사진을 선택하거나 이 자리로 끌어다 놓으세요 (복수 선택 가능)", 
@@ -117,7 +113,7 @@ else:
             
             status_text.text("✅ 모든 파일 변환 완료!")
             
-            # 워드 파일을 메모리 상의 바이트 스트림으로 변환 (다운로드 버튼용)
+            # 워드 파일을 메모리 상의 바이트 스트림으로 변환
             docx_buffer = BytesIO()
             doc.save(docx_buffer)
             docx_buffer.seek(0)
@@ -132,3 +128,7 @@ else:
                 mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
             )
             st.markdown('</div>', unsafe_allow_html=True)
+
+except KeyError:
+    # Streamlit Secrets 설정을 누락했을 경우 나오는 안내문
+    st.error("🔒 시스템 에러: Streamlit 클라우드 설정(Secrets)에 'GEMINI_API_KEY'가 등록되지 않았습니다. 관리자 페이지를 확인해 주세요.")

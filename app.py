@@ -15,7 +15,7 @@ st.set_page_config(
     layout="centered"
 )
 
-# 세련되고 직관적인 커스텀 CSS (원장님 취향 저격 테마)
+# 세련되고 직관적인 커스텀 CSS (기울임꼴 제거 반영)
 st.markdown("""
     <style>
     /* 전체 배경색: 포근하고 부드러운 크림톤 */
@@ -44,13 +44,13 @@ st.markdown("""
         letter-spacing: -0.5px;
     }
     
-    /* (Made by Manju) 우측 하단 서명 스타일 */
+    /* 💡 [수정 완료] (Made by Manju) 우측 하단 서명 스타일 */
     .author-footer {
         font-size: 14px;
         color: #B2B2B2; /* 은은한 밝은 그레이 */
         text-align: right;
         margin-bottom: 45px;
-        font-style: italic;
+        /* 기울임꼴(italic) 속성을 제거했습니다 */
         padding-right: 5px;
     }
     
@@ -103,6 +103,7 @@ st.markdown("""
 # UI 상단 타이틀 레이아웃 구성
 st.markdown('<p class="main-title">Image To Text in English</p>', unsafe_allow_html=True)
 st.markdown('<p class="sub-title">사진 속 지문을 인식하여 편집 가능한 워드 문서(.docx)로 변환합니다.</p>', unsafe_allow_html=True)
+# 💡 정자체로 표시되도록 스타일이 수정되었습니다
 st.markdown('<div class="author-footer">(Made by Manju)</div>', unsafe_allow_html=True)
 
 # 2. API Key 자동 로드 섹션
@@ -182,7 +183,7 @@ try:
                         except Exception:
                             # 재시도마저 거부당한 경우 (완전 하루 마감) -> 낙하산 작동
                             quota_blocked = True
-                            st.warning("⚠️ 오늘 사용 가능한 구글 무료 한도(20장)를 모두 소진했습니다. 현재까지 변환 성공한 지문들로만 워드 문서를 저장합니다.")
+                            st.warning("⚠️ 오늘 사용 가능한 구글 무료 한도(하루 20장)를 모두 소진했습니다. 현재까지 변환 성공한 지문들로만 워드 문서를 저장합니다.")
                             break
                     else:
                         st.error(f"❌ '{file.name}' 처리 중 오류 발생: {str(e)}")
@@ -207,7 +208,7 @@ try:
                     current_percent = target_percent
                     status_text.text(f"✅ [{idx+1}/{total_files}] 분석 및 데이터 정제 완료!")
                     
-                    # 워드 파일 조립 빌더 시작
+                    # 워드 문서 빌딩
                     doc.add_heading(f"Source: {file.name}", level=3)
                     
                     paragraphs = extracted_text.split('\n')
@@ -256,10 +257,10 @@ try:
                     # 💡 6초 안전 휴식 타이머 구간 동안에도 퍼센트를 초 단위 타임라인과 완벽 연동
                     if idx < total_files - 1:
                         steps = 60 
-                        percent_increment = (int(((idx + 1) / total_files) * 100) - current_percent) / steps
+                        # 6초간 퍼센트를 아주 조금씩 올려 안전함을 연출
+                        percent_increment = (target_percent - current_percent) * 0.05 / steps
                         
                         for step in range(steps):
-                            # 가상 상승이 아닌, 시간과 완벽하게 비례 배분되는 마이크로 연출 추가
                             sec_left = 6 - (step // 10)
                             status_text.text(f"⏳ 처리하는데 시간이 걸리니 조금만 기다려주세요.. ({sec_left}초)")
                             time.sleep(0.1)
@@ -271,7 +272,7 @@ try:
                     progress_bar.progress(100)
                     status_text.text("🎉 모든 영어 지문이 성공적으로 변환되었습니다!")
                 else:
-                    status_text.text(f"⚠️ 구글 무료 한도 도달로 인해 총 {total_files}개 중 {success_count}개만 변환되었습니다.")
+                    status_text.text(f"⚠️ 구글 한도 도달로 인해 총 {total_files}개 중 {success_count}개만 변환되었습니다.")
                 
                 # 워드 데이터 바이트 스트림 변환
                 docx_buffer = BytesIO()

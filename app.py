@@ -61,6 +61,14 @@ st.markdown("""
         box-shadow: 0 4px 20px rgba(0,0,0,0.08);
         text-align: center;
     }
+    /* 실시간 퍼센트 숫자 강조 스타일 */
+    .percent-text {
+        font-size: 20px;
+        font-weight: 700;
+        color: #5C715E;
+        margin-bottom: 8px;
+        text-align: left;
+    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -89,12 +97,18 @@ try:
             style.font.name = 'Arial'
             style.font.size = Pt(11)
             
-            progress_bar = st.progress(0)
-            status_text = st.empty()
+            # 시각적 요소를 배치할 독립 공간 할당
+            percent_display = st.empty()  # 💡 숫자가 노출될 공간
+            progress_bar = st.progress(0)  # 게이지 바
+            status_text = st.empty()       # 안내 메시지 공간
             
             total_files = len(uploaded_files)
-            base_percent = 0
             model_name = 'gemini-2.5-flash'
+            
+            # 전체 진행률을 관리할 변수
+            current_total_percent = 0
+            # 사진 1장당 책임질 퍼센트 할당량 (예: 3장이면 장당 약 33%)
+            quota_per_file = 100 / total_files 
             
             for idx, file in enumerate(uploaded_files):
                 image_bytes = file.read()
@@ -107,11 +121,19 @@ try:
                 - 결과물은 오직 추출된 텍스트만 보여주고, 다른 설명은 하지 마.
                 """
                 
-                extracted_text = ""
+                # 1단계: 파일 분석 준비 단계 (부드럽게 20% 지점까지 먼저 상승)
+                start_p = int(idx * quota_per_file)
+                mid_p = int(start_p + (quota_per_file * 0.3)) # 해당 구간의 30%까지
                 
+                status_text.text(f"⏳ [{idx+1}/{total_files}] '{file.name}' 파일을 읽는 중...")
+                for p in range(start_p, mid_p):
+                    percent_display.markdown(f'<p class="percent-text">⏳ 변환 진행률: {p}%</p>', unsafe_allow_html=True)
+                    progress_bar.progress(p)
+                    time.sleep(0.01) # 눈이 부드러움을 인지하는 속도
+                
+                extracted_text = ""
                 try:
-                    status_text.text(f"⏳ [{idx+1}/{total_files}] '{file.name}' 지문 분석 중...")
-                    
+                    status_text.text(f"⏳ [{idx+1}/{total_files}] '{file.name}' 지문을 AI 서버에서 분석하는 중...")
                     response = client.models.generate_content(
                         model=model_name,
                         contents=[
@@ -122,7 +144,6 @@ try:
                     extracted_text = response.text
                     
                 except APIError as e:
-                    # 일시적인 무료 제한 도달 시 자동 대기 문구 수정
                     if e.code == 429:
                         status_text.text("⏳ 처리하는데 시간이 걸리니 조금만 기다려주세요... (15초 후 자동 재시도)")
                         time.sleep(15)
@@ -138,38 +159,46 @@ try:
                         st.error(f"❌ '{file.name}' 처리 중 오류 발생: {str(e)}")
                         continue
 
-                # 워드 문서 작성 및 저장 순서
+                # 2단계: 분석 완료 후 데이터를 워드 문서에 바인딩하는 단계 (나머지 목표치까지 부드럽게 상승)
                 if extracted_text:
-                    target_percent = int(((idx + 1) / total_files) * 100)
-                    for step in range(15):
-                        curr = base_percent + int((target_percent - base_percent) * (step / 15))
-                        progress_bar.progress(curr)
+                    end_p = int((idx + 1) * quota_per_file)
+                    
+                    # 99%에서 멈칫하는 현상을 방지하기 위해 마지막 파일은 100%까지 강제 매핑
+                    if idx == total_files - 1:
+                        end_p = 100
+                        
+                    for p in range(mid_p, end_p):
+                        percent_display.markdown(f'<p class="percent-text">⏳ 변환 진행률: {p}%</p>', unsafe_allow_html=True)
+                        progress_bar.progress(p)
                         time.sleep(0.02)
                     
-                    base_percent = target_percent
-                    progress_bar.progress(base_percent)
-                    status_text.text(f"✅ [{idx+1}/{total_files}] 완료!")
+                    status_text.text(f"✅ [{idx+1}/{total_files}] 워드 문서 배치 완료")
                     
+                    # 워드 파일에 콘텐츠 쓰기
                     doc.add_heading(f"Source: {file.name}", level=2)
                     paragraphs = extracted_text.split('\n')
                     for para_text in paragraphs:
                         if para_text.strip():
-                            p = doc.add_paragraph()
+                            p_tag = doc.add_paragraph()
                             parts = para_text.split('**')
                             for i, part in enumerate(parts):
-                                run = p.add_run(part)
+                                run = p_tag.add_run(part)
                                 if i % 2 == 1:
                                     run.bold = True
                                     run.font.size = Pt(12)
                     
                     doc.add_page_break()
                     
-                    # 💡 [문구 수정 및 안전 대기] 다음 지문으로 넘어가기 전 친절한 안내 문구 적용
+                    # 3단계: 무료 등급 안전 제한 우회 대기 시간 (여기서도 숫자가 표기되며 흘러감)
                     if idx < total_files - 1:
+                        # 다음 파일 시작 전 대기하는 6초 동안도 문구와 상태를 자연스럽게 유지
                         for remaining in range(6, 0, -1):
+                            percent_display.markdown(f'<p class="percent-text">⏳ 변환 진행률: {end_p}%</p>', unsafe_allow_html=True)
                             status_text.text(f"⏳ 처리하는데 시간이 걸리니 조금만 기다려주세요.. ({remaining}초)")
                             time.sleep(1)
             
+            # 최종 도달 완료 연출
+            percent_display.markdown('<p class="percent-text" style="color:#0D9488;">🎉 변환 진행률: 100%</p>', unsafe_allow_html=True)
             progress_bar.progress(100)
             status_text.text("🎉 모든 영어 지문이 성공적으로 변환되었습니다!")
             

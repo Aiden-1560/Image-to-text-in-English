@@ -6,7 +6,7 @@ import time
 import re
 from google import genai
 from google.genai import types
-from google.genai.errors import APIError
+from google.genai.errors import APIError, ClientError  # 💡 ClientError 예외를 명시적으로 추가
 
 # 1. 페이지 기본 설정 및 디자인
 st.set_page_config(
@@ -103,42 +103,35 @@ try:
             
             total_files = len(uploaded_files)
             model_name = 'gemini-2.5-flash'
-            
-            # 💡 초정밀 흐름 제어를 위한 시간 기반 변수 설정
-            # 사진 1장당 처리 예상 시간 가이드라인 설정 (API연동 + 대기시간 포함 약 12초)
-            estimated_seconds_per_file = 12 
-            total_estimated_seconds = total_files * estimated_seconds_per_file
-            
-            # 실시간 가상 퍼센트를 올릴 스레드 타이머 실행
             current_percent = 0
             
             for idx, file in enumerate(uploaded_files):
                 image_bytes = file.read()
                 
-                # 원장님 피드백 완벽 반영 프롬프트 (대화 주체 분리 및 소제목 구조화 요청)
                 prompt = """
                 이 사진 속의 영어 지문 텍스트를 정확하게 추출해줘.
                 - 사진의 메인 제목이나 소제목이 있다면 텍스트 제일 앞에 '[HEADING]' 이라는 태그를 붙여줘. (예: [HEADING] Reports from the Battlefield)
-                - 대화 내용(Dialogue) 구조인 경우, 대화의 주체를 나타내는 이름 뒤에 콜론(:)을 붙이고, 이름 앞에 '[NAME]' 태그를 붙여줘. (예: [NAME] Mike: Hey, guys!)
+                - 대화 내용(Dialogue) 구조인 경우, 대화의 주체를 나타내는 이름 뒤에 콜론(:)을 붙이지 말고, 이름 앞에 '[NAME]' 태그를 붙여줘. (예: [NAME] Mike: Hey, guys!)
                 - 일반 본문 문장은 아무 태그 없이 문맥에 맞게 가독성 높은 단락으로 나누어줘.
                 - 원본에서 **진하게** 처리된 강조 키워드가 있다면 마크다운 기호(**)를 유지해줘.
                 - 결과물은 오직 추출된 텍스트만 보여주고, 다른 부연 설명은 하지 마.
                 """
                 
-                # 파일 처리 시작하면서 퍼센트를 목표 지점까지 부드럽게 롤링 업
+                # 게이지 선행 롤링 업
                 target_start_percent = int((idx / total_files) * 100)
                 target_end_percent = int(((idx + 0.5) / total_files) * 100)
                 
                 status_text.text(f"⏳ [{idx+1}/{total_files}] '{file.name}' 지문을 AI 서버에서 분석하는 중...")
                 
-                # API 호출 전에 게이지를 자연스럽게 먼저 밀어줌
                 for p in range(current_percent, target_end_percent):
                     current_percent = p
                     percent_display.markdown(f'<p class="percent-text">⏳ 변환 진행률: {current_percent}%</p>', unsafe_allow_html=True)
                     progress_bar.progress(current_percent)
-                    time.sleep(0.04)
+                    time.sleep(0.03)
                 
                 extracted_text = ""
+                
+                # 💡 모든 종류의 구글 API 에러(ClientError 포함)를 포괄하는 방어 루프
                 try:
                     response = client.models.generate_content(
                         model=model_name,
@@ -149,27 +142,34 @@ try:
                     )
                     extracted_text = response.text
                     
-                except APIError as e:
-                    if e.code == 429:
-                        status_text.text("⏳ 처리하는데 시간이 걸리니 조금만 기다려주세요... (잠시 대기 중)")
-                        time.sleep(12)
+                except (APIError, ClientError) as e:
+                    # 429 한도 초과 혹은 그 외에 일시적 에러 차단 시 부드러운 문구 유도
+                    status_text.text("⏳ 처리하는데 시간이 걸리니 조금만 기다려주세요... (안전 대기 중)")
+                    time.sleep(15)
+                    try:
+                        # 재시도
                         response = client.models.generate_content(
                             model=model_name,
-                            contents=[types.Part.from_bytes(data=image_bytes, mime_type=file.type), prompt]
+                            contents=[
+                                types.Part.from_bytes(data=image_bytes, mime_type=file.type),
+                                prompt
+                            ]
                         )
                         extracted_text = response.text
-                    else:
-                        st.error(f"❌ '{file.name}' 처리 중 오류 발생: {str(e)}")
+                    except Exception as retry_err:
+                        st.error(f"❌ '{file.name}' 재시도 중 오류가 발생했습니다: {str(retry_err)}")
                         continue
+                except Exception as general_err:
+                    st.error(f"❌ '{file.name}' 시스템 오류: {str(general_err)}")
+                    continue
 
-                # 텍스트 추출 성공 시 워드 문서 조립 및 6초 대기 구간 게이지 연동
+                # 정상 추출 완료 시 워드 조립 및 게이지 처리
                 if extracted_text:
-                    # 파일 완료 시점 목표 퍼센트 계산
                     file_done_percent = int(((idx + 1) / total_files) * 100)
                     if idx == total_files - 1:
                         file_done_percent = 100
                     
-                    # 워드 파일 타이틀 추가
+                    # 워드 문서 빌딩
                     doc.add_heading(f"Source: {file.name}", level=3)
                     
                     paragraphs = extracted_text.split('\n')
@@ -180,34 +180,26 @@ try:
                         
                         p_tag = doc.add_paragraph()
                         
-                        # 케이스 1: 제목/소제목인 경우 -> 전체 크고 진하게
                         if clean_text.startswith("[HEADING]"):
                             heading_content = clean_text.replace("[HEADING]", "").strip()
                             run = p_tag.add_run(heading_content)
                             run.bold = True
                             run.font.size = Pt(14)
                             
-                        # 케이스 2: 대화문 구조인 경우 -> 주체(이름)만 골라 진하게
                         elif clean_text.startswith("[NAME]"):
                             name_content = clean_text.replace("[NAME]", "").strip()
-                            # '이름:' 과 '나머지 대화내용' 분리 추출
                             match = re.match(r"^([^:]+:)(.*)$", name_content)
                             if match:
-                                name_part = match.group(1)   # 이름:
-                                dialogue_part = match.group(2) # 대화 내용
+                                name_part = match.group(1)   
+                                dialogue_part = match.group(2) 
                                 
-                                # 이름 부분 볼드 처리
                                 r_name = p_tag.add_run(name_part)
                                 r_name.bold = True
                                 
-                                # 대화 내용 부분은 일반 서체 처리
                                 p_tag.add_run(dialogue_part)
                             else:
                                 p_tag.add_run(name_content)
-                                
-                        # 케이스 3: 일반 지문 본문 문장
                         else:
-                            # 일반 본문 내에 부분 강조(**)가 섞여 있을 경우 처리
                             parts = clean_text.split('**')
                             for i, part in enumerate(parts):
                                 run = p_tag.add_run(part)
@@ -216,10 +208,9 @@ try:
                                     
                     doc.add_page_break()
                     
-                    # 💡 [점프 현상 차단 패치] 다음 파일로 넘어가기 전 안전 휴식(6초) 시간 동안
-                    # 퍼센트 바가 멈추지 않고 1%씩 째깍째깍 올라가도록 연동시킵니다.
+                    # 💡 다음 파일 전 대기 시간 동안 부드러운 1% 게이지 처리 연동
                     if idx < total_files - 1:
-                        steps = 60 # 6초를 60프레임으로 쪼개서 실행
+                        steps = 60 
                         percent_increment = (file_done_percent - current_percent) / steps
                         
                         for step in range(steps):
@@ -229,7 +220,6 @@ try:
                             percent_display.markdown(f'<p class="percent-text">⏳ 변환 진행률: {display_p}%</p>', unsafe_allow_html=True)
                             progress_bar.progress(display_p)
                             
-                            # 카운트다운 초 매핑 연출 (10프레임마다 1초씩 차감)
                             sec_left = 6 - (step // 10)
                             status_text.text(f"⏳ 처리하는데 시간이 걸리니 조금만 기다려주세요.. ({sec_left}초)")
                             time.sleep(0.1)
@@ -238,7 +228,7 @@ try:
                     percent_display.markdown(f'<p class="percent-text">⏳ 변환 진행률: {current_percent}%</p>', unsafe_allow_html=True)
                     progress_bar.progress(current_percent)
             
-            # 최종 100% 도달 완료
+            # 최종 완료
             percent_display.markdown('<p class="percent-text" style="color:#0D9488;">🎉 변환 진행률: 100%</p>', unsafe_allow_html=True)
             progress_bar.progress(100)
             status_text.text("🎉 모든 영어 지문이 성공적으로 변환되었습니다!")
